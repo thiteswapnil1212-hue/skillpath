@@ -78,6 +78,21 @@ npm run build
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md), [docs/SETUP.md](docs/SETUP.md), and [docs/TEAM_WORKFLOW.md](docs/TEAM_WORKFLOW.md).
 
+## Architecture
+
+```mermaid
+flowchart LR
+    Student([Student]) --> App["Next.js App<br/>student · arena · assessment"]
+    Teacher([Teacher]) --> App
+    App --> Features["src/features<br/>BKT mastery · concept graph · missions"]
+    App --> Arena["Coding arena<br/>Monaco + Pyodide · hidden tests"]
+    Arena --> Viva["Explanation viva<br/>after hidden tests pass"]
+    App --> Mentor["Mentor · keyword RAG<br/>teacher notes · no embeddings"]
+    Teacher --> Gen["Question generation<br/>Gemini doc understanding"]
+    Gen --> Review["Review queue<br/>drafts → publish"]
+    App --> DB["Supabase<br/>learner_mastery · optional"]
+```
+
 ## Project structure
 
 ```text
