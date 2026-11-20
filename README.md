@@ -8,13 +8,19 @@ SkillPath is an adaptive coding-learning workspace for students and teachers. It
 
 The workspace shows only saved learner and teacher activity. Empty states are used until real activity is recorded — no sample learner, class, assignment, or activity records are created automatically. The landing page shows `0+` counters until real data exists.
 
+## Screenshots
+
+![SkillPath landing page](docs/screenshots/landing.png)
+
+Landing page — dark hero 'Learn with direction.' with a spiral starfield; stats 6+ concepts mapped, 24+ focused missions, 3+ languages ready. Screenshot of the live demo, 20 Nov 2026.
+
 ## What it does
 
 **For students**
 
 - A concept map and learning pages that show what to learn next.
 - A student dashboard with saved concept estimates and a deterministic next-mission recommendation when progress exists.
-- A coding arena with a Monaco editor, session replay, and an explanation viva after passing hidden tests.
+- A coding arena with a Monaco editor, session replay, and an explanation viva revealed on Submit (even if the hidden tests fail).
 - Assessments with server-served questions and server-validated scoring, tracked per concept with Bayesian Knowledge Tracing (BKT) mastery.
 
 **For teachers**
@@ -45,8 +51,9 @@ sequenceDiagram
     Arena->>Runner: Run visible samples
     Runner-->>Arena: Pass / fail
     Arena->>Runner: Run hidden tests (5 countDown cases)
-    Runner-->>Arena: Hidden tests pass
-    Arena->>Viva: Reveal explanation viva
+    Runner-->>Arena: Hidden tests pass / fail
+    Student->>Arena: Submit solution
+    Arena->>Viva: Reveal explanation viva (on Submit, even if hidden tests fail)
     Viva->>Student: Questions generated from submitted identifiers
     Student->>Viva: Heuristic answers (no source sent to any external API)
     Viva->>BKT: Update mastery from viva + attempt
@@ -60,6 +67,7 @@ Notes on the diagram, all true to the implementation:
 
 - **Python runs locally** in a pinned Pyodide Web Worker (`public/pyodide-worker.js`). Remote execution through JDoodle or Judge0 is optional and **disabled unless explicitly configured** with server-side credentials.
 - **The viva is generated from the submitted identifiers** (function and variable names in the student's own code). Heuristic answers update mastery without sending source to an external API. **No generated explanation is connected by default.**
+- **The viva is revealed on Submit, not on passing.** Per `docs/ARCHITECTURE.md`, the arena reveals viva questions on Submit regardless of hidden-test results or provider availability, so a learner can still explain a solution when billable execution is disabled. (Corrected 20 Nov 2026 — the earlier diagram implied the viva only appeared after the hidden tests passed.)
 - **The mentor is local keyword retrieval** over concept notes plus deterministic heuristics — not embeddings, not a vector database, not an LLM call.
 - **RAG (first version) is keyword retrieval** over teacher material. Fine-tuning is intentionally not used: teacher material changes per course, and retrieval provides the grounding boundary.
 
@@ -71,7 +79,7 @@ flowchart LR
     Teacher([Teacher]) --> App
     App --> Features["src/features<br/>BKT mastery · concept graph · missions"]
     App --> Arena["Coding arena<br/>Monaco + Pyodide worker · hidden tests"]
-    Arena --> Viva["Explanation viva<br/>after hidden tests pass"]
+    Arena --> Viva["Explanation viva<br/>revealed on Submit"]
     App --> Mentor["Mentor · keyword RAG<br/>concept notes · no embeddings"]
     Teacher --> Gen["Question generation<br/>Gemini doc understanding"]
     Gen --> Review["Review queue<br/>drafts → human review → publish"]
@@ -86,6 +94,140 @@ Where data lives:
 - **`.data/teacher-portal/state.json`** — teacher drafts on local development only, when Supabase is not configured.
 - **Supabase `learner_mastery` table** — durable mastery storage when credentials are configured (migration: `supabase/migrations/20261016000000_create_learner_mastery.sql`).
 - **Anonymous learner cookie** — a local-development identity, not authentication. There is no sign-in system beyond the `/login` page surface; do not treat the cookie as an account.
+
+## Database schema (Supabase)
+
+Supabase is optional: without credentials the server persists mastery and teacher state to the ignored `.data/` directory (local development only). When Supabase is configured, durable storage is 11 tables across 7 migrations in `supabase/migrations/`, all with row-level security enabled.
+
+```mermaid
+erDiagram
+    auth_users {
+        uuid id PK
+    }
+    learner_mastery {
+        uuid learner_id PK "cookie UUID or auth.uid()"
+        jsonb mastery
+        timestamptz updated_at
+    }
+    learner_viva_attempts {
+        uuid learner_id PK "cookie UUID or auth.uid()"
+        text mission_id PK
+        timestamptz counted_at
+    }
+    teacher_documents {
+        uuid id PK
+        uuid owner_id FK "auth.users"
+        text name
+        text mime_type
+        text status "processing / ready / failed"
+        text failure_reason
+        timestamptz created_at
+    }
+    teacher_document_chunks {
+        text id PK
+        uuid document_id FK
+        uuid owner_id FK "auth.users"
+        text content
+        int page_number
+        text topic
+        jsonb concepts
+        timestamptz created_at
+    }
+    quiz_sets {
+        uuid id PK
+        uuid owner_id FK "auth.users"
+        text title
+        text subject
+        text topic
+        uuid topic_id
+        text learning_stage "diagnostic / practice"
+        text status "draft / reviewed / published / archived"
+        jsonb visual_explanation
+        timestamptz available_from
+        timestamptz due_at
+        timestamptz published_at
+        timestamptz created_at
+    }
+    quiz_questions {
+        text id PK
+        uuid quiz_set_id FK
+        uuid owner_id FK "auth.users"
+        text question_type "mcq / short-answer"
+        text prompt
+        jsonb options
+        text explanation
+        text difficulty "foundation / intermediate / advanced"
+        uuid source_document_id FK "teacher_documents, nullable"
+        text generation_status "grounded / needs-review"
+        text review_status "draft / reviewed / published"
+        timestamptz updated_at
+    }
+    quiz_question_answers {
+        text question_id PK "FK quiz_questions"
+        uuid owner_id FK "auth.users"
+        text correct_answer
+    }
+    quiz_attempts {
+        uuid id PK
+        uuid quiz_set_id FK
+        uuid learner_id FK "auth.users"
+        timestamptz submitted_at
+        int score
+        int total
+        text learning_stage "diagnostic / practice"
+    }
+    quiz_responses {
+        uuid attempt_id PK "FK quiz_attempts"
+        text question_id PK "FK quiz_questions"
+        text response
+        boolean is_correct
+        text topic
+        text difficulty
+        text concept_id
+    }
+    student_profiles {
+        uuid id PK "FK auth.users"
+        text email
+        timestamptz created_at
+        timestamptz last_activity_at
+    }
+    student_learning_events {
+        uuid id PK
+        uuid learner_id "auth.uid(), no FK"
+        uuid quiz_set_id FK
+        uuid topic_id
+        text event_type "topic_opened / diagnostic_completed / explanation_viewed / concept_revisited / practice_completed / topic_completed"
+        text concept_id
+        timestamptz occurred_at
+        jsonb metadata
+    }
+
+    auth_users ||--o{ teacher_documents : owns
+    auth_users ||--o{ teacher_document_chunks : owns
+    auth_users ||--o{ quiz_sets : owns
+    auth_users ||--o{ quiz_questions : owns
+    auth_users ||--o{ quiz_question_answers : owns
+    auth_users ||--o{ quiz_attempts : takes
+    auth_users ||--|| student_profiles : "is"
+    teacher_documents ||--o{ teacher_document_chunks : "split into"
+    teacher_documents ||--o{ quiz_questions : "grounds"
+    quiz_sets ||--o{ quiz_questions : contains
+    quiz_sets ||--o{ quiz_attempts : attempted
+    quiz_sets ||--o{ student_learning_events : "events for"
+    quiz_questions ||--|| quiz_question_answers : "answer key for"
+    quiz_questions ||--o{ quiz_responses : answered
+    quiz_attempts ||--o{ quiz_responses : contains
+```
+
+Notes on the schema, all read from the migrations:
+
+- **Anonymous vs authenticated identity.** `learner_mastery.learner_id`, `learner_viva_attempts.learner_id`, and `student_learning_events.learner_id` are plain `uuid` columns with no foreign key: for anonymous learners they hold the UUID from the learner cookie (`x-learner-id` header); for signed-in learners they hold `auth.uid()`. Only `quiz_attempts.learner_id` and `student_profiles.id` are declared foreign keys to `auth.users(id)`.
+- **Viva mastery is claimed once.** `learner_viva_attempts` has primary key `(learner_id, mission_id)` — one counted viva per learner per mission.
+- **Answer keys are teacher-only.** `quiz_question_answers` holds `correct_answer` per question; students never receive it — the question endpoint returns only prompts and choices, and RLS restricts the answers table to the owning teacher.
+- **Grounding is traceable.** Every `quiz_questions` row records its source document, page, and excerpt (`source_document_id`, `source_page`, `source_excerpt`) plus `generation_status` (`grounded` / `needs-review`).
+- **Learning stages.** `quiz_sets` and `quiz_attempts` carry `learning_stage` (`diagnostic` / `practice`); `student_learning_events` records the learner journey (`topic_opened`, `diagnostic_completed`, `explanation_viewed`, `concept_revisited`, `practice_completed`, `topic_completed`).
+- **Original uploads are not kept.** Teacher documents store extracted chunks only; the `teacher_document_chunks` table comment states the original uploaded binaries are not retained.
+- `auth_users` in the diagram is Supabase Auth's built-in `auth.users` table, not a migration in this repo.
 
 ## Tech stack
 
@@ -102,6 +244,26 @@ Where data lives:
 
 No PyTorch, TensorFlow, LangChain, Pinecone, or vector database is used anywhere in this project. AI features are keyword retrieval, deterministic heuristics, and (teacher-side only) Gemini document understanding for question generation.
 
+## Deployment
+
+```mermaid
+flowchart TB
+    Learner([Learner browser]) --> Vercel["Vercel — Next.js 16 App Router<br/>devkraft-black.vercel.app"]
+    Teacher([Teacher browser]) --> Vercel
+    Vercel --> Pyodide["Pyodide Web Worker<br/>public/pyodide-worker.js · pinned<br/>Python runs in the browser"]
+    Vercel --> Local["Browser localStorage<br/>arena event timeline + replay"]
+    Vercel --> Supabase["Supabase Postgres + Auth<br/>11 tables · RLS enabled on all<br/>public key in browser · service-role key server-only"]
+    Vercel --> Gemini["Gemini — server routes only<br/>teacher document understanding"]
+    Vercel --> Ollama["Ollama — optional fallback<br/>OLLAMA_BASE_URL · OLLAMA_MODEL"]
+    Vercel --> JDoodle["JDoodle / Judge0<br/>disabled by default · JDOODLE_EXECUTION_ENABLED=true opt-in"]
+    Vercel -.-> DataDir[".data/ — local dev only<br/>ignored, not durable storage"]
+```
+
+- **Live demo** runs on Vercel at https://devkraft-black.vercel.app/ (Next.js 16 App Router).
+- **Supabase is optional.** Without credentials the app runs locally with `.data/` files; with credentials it uses Postgres + Auth. The browser uses the Supabase public key; authoritative grading uses the server-only `SUPABASE_SERVICE_ROLE_KEY`, because student RLS must never expose answer keys.
+- **Python runs in the browser** via the pinned Pyodide Web Worker (`public/pyodide-worker.js`). JDoodle / Judge0 are disabled by default and only opt in with `JDOODLE_EXECUTION_ENABLED=true` plus server-side credentials; arena execution through JDoodle has a 12-second request timeout.
+- **Teacher document understanding** uses Gemini from server routes only (`GEMINI_API_KEY`), with Ollama (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`) as an optional fallback when Gemini is unavailable or fails output/grounding validation. PDFs/PPTX still require Gemini for extraction.
+
 ## What works
 
 - Responsive landing page with student, teacher, assessment, and coding arena navigation.
@@ -110,7 +272,7 @@ No PyTorch, TensorFlow, LangChain, Pinecone, or vector database is used anywhere
 - Server-served assessment questions and server-validated scoring with per-concept BKT mastery saved for an anonymous browser learner.
 - Monaco code editor with TypeScript, JavaScript, and Python starter snippets. The arena can run visible samples and five hidden `countDown` cases through an explicitly enabled JDoodle provider; submissions update mastery.
 - Arena attempts keep an event timeline in browser local storage and show a replay scrubber with integrity signals explicitly flagged for human review.
-- Passing the arena hidden tests reveals an explanation viva generated from the submitted identifiers; heuristic answers update mastery without sending source to an external API.
+- Submitting a solution reveals an explanation viva generated from the submitted identifiers — even when the hidden tests fail or the execution provider is disabled; heuristic answers update mastery without sending source to an external API.
 - Local concept-note keyword retrieval and separate deterministic mentor heuristics. No generated explanation is connected.
 - Typed domain and API contracts, Supabase SSR/browser client helpers, and adaptive-learning unit tests.
 
