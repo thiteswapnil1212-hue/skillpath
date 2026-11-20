@@ -4,9 +4,9 @@
 
 SkillPath is an adaptive coding-learning workspace for students and teachers. It was built as a team hackathon project for PS2 — Adaptive Learning and Assessment Portal.
 
-Live demo (team deployment): https://devkraft-black.vercel.app/
+**Live demo (team deployment):** https://devkraft-black.vercel.app/
 
-The workspace shows only saved learner and teacher activity. Empty states are used until real activity is recorded — no sample learner, class, assignment, or activity records are created automatically.
+The workspace shows only saved learner and teacher activity. Empty states are used until real activity is recorded — no sample learner, class, assignment, or activity records are created automatically. The landing page shows `0+` counters until real data exists.
 
 ## What it does
 
@@ -23,16 +23,84 @@ The workspace shows only saved learner and teacher activity. Empty states are us
 - Question generation from pasted notes or uploaded TXT, Markdown, PDF, or PPTX material, saved as drafts for review before publishing.
 - A review queue that flags arena attempts with integrity signals for human review.
 
-## How it works
+## How the core loop works
 
-- **Adaptive learning:** concept estimates are updated from assessment and arena results, and the next mission is recommended deterministically from saved progress.
-- **Coding arena:** TypeScript, JavaScript, and Python starter snippets. Python runs locally in a pinned Pyodide Web Worker. Remote execution through JDoodle or Judge0 is optional and disabled unless explicitly configured with server-side credentials.
-- **Mentor and viva:** local concept-note keyword retrieval and deterministic mentor heuristics. Passing hidden tests reveals an explanation viva generated from the submitted identifiers; heuristic answers update mastery without sending source to an external API. No generated explanation is connected by default.
-- **RAG (first version):** keyword retrieval over teacher material, not embeddings or a vector database. Fine-tuning is intentionally not used.
+A student practices, the system updates what it believes they know, and the next mission follows from that — deterministically, not from a black-box model.
+
+```mermaid
+sequenceDiagram
+    actor Student
+    participant Dashboard as Student dashboard
+    participant Arena as Coding arena (Monaco)
+    participant Runner as Code runner
+    participant Viva as Explanation viva
+    participant BKT as BKT mastery
+    participant Mentor as Mentor (keyword RAG)
+
+    Student->>Dashboard: Open dashboard
+    Dashboard->>BKT: Read saved concept estimates
+    BKT-->>Dashboard: Deterministic next-mission recommendation
+    Dashboard-->>Student: Show what to learn next
+    Student->>Arena: Write a solution (TS / JS / Python)
+    Arena->>Runner: Run visible samples
+    Runner-->>Arena: Pass / fail
+    Arena->>Runner: Run hidden tests (5 countDown cases)
+    Runner-->>Arena: Hidden tests pass
+    Arena->>Viva: Reveal explanation viva
+    Viva->>Student: Questions generated from submitted identifiers
+    Student->>Viva: Heuristic answers (no source sent to any external API)
+    Viva->>BKT: Update mastery from viva + attempt
+    BKT-->>Dashboard: New estimates, new next mission
+    Student->>Mentor: Ask about a concept
+    Mentor->>Mentor: Keyword retrieval over concept notes
+    Mentor-->>Student: Deterministic heuristic answer
+```
+
+Notes on the diagram, all true to the implementation:
+
+- **Python runs locally** in a pinned Pyodide Web Worker (`public/pyodide-worker.js`). Remote execution through JDoodle or Judge0 is optional and **disabled unless explicitly configured** with server-side credentials.
+- **The viva is generated from the submitted identifiers** (function and variable names in the student's own code). Heuristic answers update mastery without sending source to an external API. **No generated explanation is connected by default.**
+- **The mentor is local keyword retrieval** over concept notes plus deterministic heuristics — not embeddings, not a vector database, not an LLM call.
+- **RAG (first version) is keyword retrieval** over teacher material. Fine-tuning is intentionally not used: teacher material changes per course, and retrieval provides the grounding boundary.
+
+## How it works (data flow)
+
+```mermaid
+flowchart LR
+    Student([Student]) --> App["Next.js App<br/>student · arena · assessment · learn"]
+    Teacher([Teacher]) --> App
+    App --> Features["src/features<br/>BKT mastery · concept graph · missions"]
+    App --> Arena["Coding arena<br/>Monaco + Pyodide worker · hidden tests"]
+    Arena --> Viva["Explanation viva<br/>after hidden tests pass"]
+    App --> Mentor["Mentor · keyword RAG<br/>concept notes · no embeddings"]
+    Teacher --> Gen["Question generation<br/>Gemini doc understanding"]
+    Gen --> Review["Review queue<br/>drafts → human review → publish"]
+    App --> Local["Local storage<br/>arena event timeline + replay<br/>.data/ (local dev only)"]
+    App --> DB["Supabase (optional)<br/>learner_mastery table"]
+```
+
+Where data lives:
+
+- **Browser local storage** — arena attempt event timelines and the replay scrubber.
+- **`.data/learner-mastery/`** — assessment mastery on local development only, written after a local learner completes activity. Production requires Supabase and never treats that directory as durable storage.
+- **`.data/teacher-portal/state.json`** — teacher drafts on local development only, when Supabase is not configured.
+- **Supabase `learner_mastery` table** — durable mastery storage when credentials are configured (migration: `supabase/migrations/20261016000000_create_learner_mastery.sql`).
+- **Anonymous learner cookie** — a local-development identity, not authentication. There is no sign-in system beyond the `/login` page surface; do not treat the cookie as an account.
 
 ## Tech stack
 
-Next.js 16, React 19, TypeScript, Tailwind CSS, Monaco Editor, Pyodide, Supabase (optional), Vitest. See `package.json` for the full list.
+| Layer | Choice |
+|---|---|
+| Framework | Next.js 16.3.7 (App Router) · React 19.3.0 · TypeScript 5.9.3 |
+| Styling | Tailwind CSS 3.4.17 · PostCSS · Autoprefixer |
+| Editor | `@monaco-editor/react` 4.7.0 |
+| Code execution | Pyodide Web Worker (local, pinned; Pyodide is not an npm dependency) · JDoodle / Judge0 optional, disabled by default |
+| Data | `@supabase/ssr` 0.7.0 · `@supabase/supabase-js` 2.57.4 (both optional) |
+| Validation | Zod 3.25 |
+| UI | Framer Motion 14.3.0 · `lucide-react` 0.468.0 · Three.js 0.186.1 / `@react-three/fiber` 9.8.1 |
+| Tests | Vitest 3.2.4 · `tsc --noEmit` typecheck · ESLint 9.39.0 |
+
+No PyTorch, TensorFlow, LangChain, Pinecone, or vector database is used anywhere in this project. AI features are keyword retrieval, deterministic heuristics, and (teacher-side only) Gemini document understanding for question generation.
 
 ## What works
 
@@ -46,8 +114,6 @@ Next.js 16, React 19, TypeScript, Tailwind CSS, Monaco Editor, Pyodide, Supabase
 - Local concept-note keyword retrieval and separate deterministic mentor heuristics. No generated explanation is connected.
 - Typed domain and API contracts, Supabase SSR/browser client helpers, and adaptive-learning unit tests.
 
-Local development can run without Supabase. Assessment mastery is saved to `.data/learner-mastery/` only after a local learner completes activity; production requires Supabase and never treats that local directory as durable storage.
-
 ## Start locally
 
 ```sh
@@ -57,6 +123,8 @@ npm run dev
 ```
 
 Then open `http://localhost:3000`. On Windows PowerShell, use `Copy-Item .env.example .env.local` instead of `cp`.
+
+Local development can run without Supabase.
 
 ## Quality checks
 
@@ -78,31 +146,31 @@ npm run build
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md), [docs/SETUP.md](docs/SETUP.md), and [docs/TEAM_WORKFLOW.md](docs/TEAM_WORKFLOW.md).
 
-## Architecture
-
-```mermaid
-flowchart LR
-    Student([Student]) --> App["Next.js App<br/>student · arena · assessment"]
-    Teacher([Teacher]) --> App
-    App --> Features["src/features<br/>BKT mastery · concept graph · missions"]
-    App --> Arena["Coding arena<br/>Monaco + Pyodide · hidden tests"]
-    Arena --> Viva["Explanation viva<br/>after hidden tests pass"]
-    App --> Mentor["Mentor · keyword RAG<br/>teacher notes · no embeddings"]
-    Teacher --> Gen["Question generation<br/>Gemini doc understanding"]
-    Gen --> Review["Review queue<br/>drafts → publish"]
-    App --> DB["Supabase<br/>learner_mastery · optional"]
-```
-
 ## Project structure
 
 ```text
-src/app/            Next.js pages and API routes (student, teacher, arena, assessment)
+src/app/            Next.js pages and API routes
+                    api/ · arena/ · assessment/ · learn/ · login/ · student/ · teacher/
 src/components/     Landing, learning, coding, student, and teacher UI
-src/features/      Adaptive learning (BKT, concept graph, missions) and assessments
-src/data/          Concept notes and demo data
+src/features/       Adaptive learning (BKT, concept graph, missions) and assessments
+src/lib/            Shared helpers (incl. Supabase SSR/browser clients)
+src/config/         App configuration
+src/data/           Concept notes and demo data
+src/types/          Typed domain and API contracts
+public/            favicon.png · js-worker.js · pyodide-worker.js
 supabase/          SQL migrations for durable storage
 docs/              Architecture, API contracts, setup, and team workflow
 ```
+
+## Honest limits
+
+- **No real authentication.** The anonymous learner cookie is a local-development identity, not an account system.
+- **No sample data.** Every surface shows honest empty states until real learner or teacher activity is recorded.
+- **No remote code execution on the live demo.** JDoodle and Judge0 are disabled unless explicitly configured with server-side credentials; Python runs locally in the browser via Pyodide.
+- **No embeddings, vector database, or fine-tuning.** RAG is keyword retrieval; the mentor is deterministic heuristics.
+- **No generated explanations connected by default.** The viva is generated from submitted identifiers with heuristic answers.
+- **No persistent analytics yet.** Session replay, code viva, persistent analytics, and validated adaptive-model parameters remain future work.
+- **Supabase is optional and local-first.** Without it, mastery and teacher state live in the ignored `.data/` directory, which is not durable storage.
 
 ## Team
 
